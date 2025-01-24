@@ -409,11 +409,13 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
     }
 
     // report on mixed memory allocation status (re-using our float reduce function, bit awk ok)
-    int reduced_memory_status = (int) multi_gpu_cpu_float_sum((float)memory_status, &multi_gpu_config);
-    if (reduced_memory_status >= 1) {
-        printf0("WARNING: Fell back to cudaMallocManaged when initializing m,v,master_weights on %d GPUs\n", reduced_memory_status);
-        printf0("         Prevents an OOM, but code may run much slower due to device <-> host memory movement\n");
-    }
+    // int reduced_memory_status = (int) multi_gpu_cpu_float_sum((float)memory_status, &multi_gpu_config);
+    int reduced_memory_status = (int)memory_status;
+    // no multi-gpu fallback warning needed
+    // if (reduced_memory_status >= 1) {
+    //     printf0("WARNING: Fell back to cudaMallocManaged when initializing m,v,master_weights on %d GPUs\n", reduced_memory_status);
+    //     printf0("         Prevents an OOM, but code may run much slower due to device <-> host memory movement\n");
+    // }
     // report on device memory usage
     size_t free, total;
     cudaCheck(cudaMemGetInfo(&free, &total));
@@ -954,9 +956,10 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         // reduce all the losses within the current GPU (across all microsteps)
         global_sum_deterministic(model->accumulated_mean_loss, acts.losses, B*T, main_stream);
         // reduce loss across GPUs to a single, final float across all microsteps and GPUs
-        #if MULTI_GPU
-        ncclCheck(ncclAllReduce(model->accumulated_mean_loss, model->accumulated_mean_loss, sizeof(float), ncclFloat, ncclAvg, multi_gpu_config.nccl_comm, main_stream));
-        #endif
+        // remove multi gpu support completely
+        // #if MULTI_GPU
+        // ncclCheck(ncclAllReduce(model->accumulated_mean_loss, model->accumulated_mean_loss, sizeof(float), ncclFloat, ncclAvg, multi_gpu_config.nccl_comm, main_stream));
+        // #endif
         cudaCheck(cudaMemcpyAsync(&model->mean_loss, model->accumulated_mean_loss, sizeof(float), cudaMemcpyDeviceToHost, main_stream));
         // reduce the gradients for non-transformer block parameters
         floatX* const pointers[] = {grads.wte, grads.wpe, grads.lnfw, grads.lnfb};
@@ -1017,10 +1020,11 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
             }
         }
         global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
-#if MULTI_GPU
-        // further sum the (partial) squared norm across all GPUs
-        ncclCheck(ncclAllReduce(grad_norm_squared, grad_norm_squared, sizeof(float), ncclFloat, ncclSum, multi_gpu_config->nccl_comm, main_stream));
-#endif
+        // remove if multi gpu block completely
+// #if MULTI_GPU
+//         // further sum the (partial) squared norm across all GPUs
+//         ncclCheck(ncclAllReduce(grad_norm_squared, grad_norm_squared, sizeof(float), ncclFloat, ncclSum, multi_gpu_config->nccl_comm, main_stream));
+// #endif
     } else {
         // in regular DDP, backward has averaged the gradients across all GPUs
         // so each GPU can compute the squared norm over the whole grad vector, with no added comms needed
@@ -1106,17 +1110,18 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         }
 
         if (multi_gpu_config->zero_stage == 1) {
-#if MULTI_GPU
-            ncclCheck(ncclGroupStart());
-            for(int l = 0; l < num_layers; ++l) {
-                // gather updated shards of model->params_memory from each process
-                ncclCheck(ncclAllGather(param_ptr + l * tensor.size,
-                                        (floatX*) model->params_memory + tensor.offset + l * tensor.size,
-                                        shard.size, ncclFloatX,
-                                        multi_gpu_config->nccl_comm, multi_gpu_config->nccl_stream));
-            }
-            ncclCheck(ncclGroupEnd());
-#endif
+            // remove multi gpu support completely
+// #if MULTI_GPU
+//             ncclCheck(ncclGroupStart());
+//             for(int l = 0; l < num_layers; ++l) {
+//                 // gather updated shards of model->params_memory from each process
+//                 ncclCheck(ncclAllGather(param_ptr + l * tensor.size,
+//                                         (floatX*) model->params_memory + tensor.offset + l * tensor.size,
+//                                         shard.size, ncclFloatX,
+//                                         multi_gpu_config->nccl_comm, multi_gpu_config->nccl_stream));
+//             }
+//             ncclCheck(ncclGroupEnd());
+// #endif
         }
     }
 
@@ -1501,7 +1506,7 @@ int main(int argc, char *argv[]) {
         else { error_usage(); }
     }
 
-    multi_gpu_config = multi_gpu_config_init(num_processes, process_rank, gpus_per_node, server_ip, fs_path, nccl_init_method);
+    //multi_gpu_config = multi_gpu_config_init(num_processes, process_rank, gpus_per_node, server_ip, fs_path, nccl_init_method);
     common_start(override_enable_tf32, false); // common init code for train/test/profile
 
     // should do a bit more error checking here
@@ -1509,7 +1514,7 @@ int main(int argc, char *argv[]) {
     if (output_log_dir != NULL) {
         assert(strlen(output_log_dir) < 400); // careful bunch of hardcoded snprintf around this
     }
-    int tokens_per_fwdbwd = B * T * multi_gpu_config.num_processes; // one micro-batch processes this many tokens
+    int tokens_per_fwdbwd = B * T; // one micro-batch processes this many tokens
     // calculate sensible default for total batch size as assuming no gradient accumulation
     if (total_batch_size == -1) { total_batch_size = tokens_per_fwdbwd; }
     // in the future, we might want to set gelu fusion to 2 for SM90+ and 0 for other GPUs

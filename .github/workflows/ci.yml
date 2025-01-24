@@ -214,8 +214,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install OpenMP and OpenMPI
-        run: apt-get update && apt-get install -y libomp-dev libopenmpi-dev
+      - name: Install Dependencies
+        run: apt-get update && apt-get install -y libomp-dev
 
       - name: Build project
         run: make -j4 -C dev/cuda

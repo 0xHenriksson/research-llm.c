@@ -46,16 +46,18 @@ define file_exists_in_path
 endef
 endif
 
-ifneq ($(CI),true) # if not in CI, then use the GPU query
-  ifndef GPU_COMPUTE_CAPABILITY # set to defaults if: make GPU_COMPUTE_CAPABILITY=
-    ifneq ($(call file_exists_in_path, nvidia-smi),)
-      # Get the compute capabilities of all GPUs
-      # Remove decimal points, sort numerically in ascending order, and select the first (lowest) value
-      GPU_COMPUTE_CAPABILITY=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed 's/\.//g' | sort -n | head -n 1)
-      GPU_COMPUTE_CAPABILITY := $(strip $(GPU_COMPUTE_CAPABILITY))
-    endif
-  endif
-endif
+# ifneq ($(CI),true) # if not in CI, then use the GPU query
+#   ifndef GPU_COMPUTE_CAPABILITY # set to defaults if: make GPU_COMPUTE_CAPABILITY=
+#     ifneq ($(call file_exists_in_path, nvidia-smi),)
+#       # Get the compute capabilities of all GPUs
+#       # Remove decimal points, sort numerically in ascending order, and select the first (lowest) value
+#       GPU_COMPUTE_CAPABILITY=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | sed 's/\.//g' | sort -n | head -n 1)
+#       GPU_COMPUTE_CAPABILITY := $(strip $(GPU_COMPUTE_CAPABILITY))
+#     endif
+#   endif
+# endif
+GPU_COMPUTE_CAPABILITY = 87
+NVCC_FLAFS += --generate-code arch=compute_87, code=sm_87 -Xcompiler -mfpu=neon
 
 # set to defaults if - make GPU_COMPUTE_CAPABILITY= otherwise use the compute capability detected above
 ifneq ($(GPU_COMPUTE_CAPABILITY),)

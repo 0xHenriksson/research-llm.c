@@ -720,7 +720,7 @@ int main(int argc, char **argv) {
     printf("Using kernel %d\n", kernel_num);
 
     // define block sizes we'll use in correctness and timing
-    int block_sizes[] = {32, 64, 128, 256, 512, 1024};
+    int block_sizes[] = {128, 256, 512}; // was {32, 64, 128, 256, 512, 1024}
 
     // first check the correctness of the kernel
     softmax_forward_cpu(probs, logits, B * T, V);
