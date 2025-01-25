@@ -940,7 +940,7 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
                 4 * C * C, 4 * C,
                 C * 4 * C, C
             };
-            multi_gpu_async_reduce_gradient(pointers, nelem, &multi_gpu_config, main_stream);
+            // multi_gpu_async_reduce_gradient(pointers, nelem, &multi_gpu_config, main_stream);
         }
     }
     encoder_backward(grads.wte, grads.wpe, scratchX, model->workload_indices, model->bucket_info,
@@ -984,136 +984,155 @@ ShardInfo gpt2_get_tensor_at_layer(const GPT2 *model, int layer_id, int param_te
     return {offset, size};
 }
 
-float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
-    NVTX_RANGE_FN();
-    floatX* grads_memory = (floatX*)model->grads_memory;
+// Multi GPU support not to be used, but kept commented for reference
+// float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
+//     NVTX_RANGE_FN();
+//     floatX* grads_memory = (floatX*)model->grads_memory;
 
-    // repurposing this buffer (which isn't needed now) to write grad norm into it
-    float* grad_norm_squared = (float*)model->acts.output;
-    float grad_norm_squared_cpu = 0.0f;
+//     // repurposing this buffer (which isn't needed now) to write grad norm into it
+//     float* grad_norm_squared = (float*)model->acts.output;
+//     float grad_norm_squared_cpu = 0.0f;
 
-    int num_slices[2] = {1, model->config.num_layers};
-    int max_num_block_sums = get_max_num_block_sums(num_slices, 2);
-    if (multi_gpu_config->zero_stage == 1) {
-        // because of the ncclReduceScatter() in backward,
-        // grads_memory only contains the averaged gradients at the local shards,
-        // so we only calculate the grad norm at the grads_memory belonging to the local shards
-        for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
-            ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
-            ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
-            ptrdiff_t offset = tensor.offset + shard.offset;
-            bool is_first_pass = (i == 0);
-            if((i < 2 || i > 13)) {
-                global_norm_squared(grad_norm_squared, grads_memory + offset, shard.size, 0, 1,
-                                    max_num_block_sums, is_first_pass, main_stream);
-            } else {
-                global_norm_squared(grad_norm_squared, grads_memory + offset, shard.size, tensor.size, model->config.num_layers,
-                                    max_num_block_sums, is_first_pass, main_stream);
-            }
-        }
-        global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
-        // remove if multi gpu block completely
-    } else {
-        // in regular DDP, backward has averaged the gradients across all GPUs
-        // so each GPU can compute the squared norm over the whole grad vector, with no added comms needed
-        global_norm_squared(grad_norm_squared, grads_memory, model->num_parameters, 0, 1, max_num_block_sums, true, main_stream);
-        global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
-    }
-    cudaCheck(cudaMemcpy(&grad_norm_squared_cpu, grad_norm_squared, sizeof(float), cudaMemcpyDeviceToHost));
-    float grad_norm_cpu = sqrtf(grad_norm_squared_cpu);
-    return grad_norm_cpu;
+//     int num_slices[2] = {1, model->config.num_layers};
+//     int max_num_block_sums = get_max_num_block_sums(num_slices, 2);
+//     if (multi_gpu_config->zero_stage == 1) {
+//         // because of the ncclReduceScatter() in backward,
+//         // grads_memory only contains the averaged gradients at the local shards,
+//         // so we only calculate the grad norm at the grads_memory belonging to the local shards
+//         for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+//             ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
+//             ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
+//             ptrdiff_t offset = tensor.offset + shard.offset;
+//             bool is_first_pass = (i == 0);
+//             if((i < 2 || i > 13)) {
+//                 global_norm_squared(grad_norm_squared, grads_memory + offset, shard.size, 0, 1,
+//                                     max_num_block_sums, is_first_pass, main_stream);
+//             } else {
+//                 global_norm_squared(grad_norm_squared, grads_memory + offset, shard.size, tensor.size, model->config.num_layers,
+//                                     max_num_block_sums, is_first_pass, main_stream);
+//             }
+//         }
+//         global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
+//         // remove if multi gpu block completely
+//     } else {
+//         // in regular DDP, backward has averaged the gradients across all GPUs
+//         // so each GPU can compute the squared norm over the whole grad vector, with no added comms needed
+//         global_norm_squared(grad_norm_squared, grads_memory, model->num_parameters, 0, 1, max_num_block_sums, true, main_stream);
+//         global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
+//     }
+//     cudaCheck(cudaMemcpy(&grad_norm_squared_cpu, grad_norm_squared, sizeof(float), cudaMemcpyDeviceToHost));
+//     float grad_norm_cpu = sqrtf(grad_norm_squared_cpu);
+//     return grad_norm_cpu;
+// }
+
+// Reimplement norm calculation for single GPU (numerical stability)
+float gpt2_calculate_grad_norm(GPT2 *model) {
+    float norm = 0.0f;
+    const int block_size = 256;
+    const int grid_size = (model->num_parameters + block_size - 1) / block_size;
+    global_norm_squared<<<grid_size, block_size>>>(model->grads_memory, model->num_parameters, &norm);
+    cudaCheck(cudaDeviceSynchronize());
+    return sqrtf(norm);
 }
 
-void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, float grad_scale, int t,
-                 MultiGpuConfig* multi_gpu_config, bool init_from_master_only=false) {
-    // update the model parameters using the AdamW optimizer
-    // keep in mind that optimizer sharding (ZeRO-1) assigns different parameters to different GPUs
-    // so we may not be responsible for the entire parameter tensor
-    // also, this function was very simple a while back but become very complex, only because we want to
-    // selectively weight decay some, but not all tensors :(
-    // TODO: revisit and probably refactor this entire function
-    NVTX_RANGE_FN();
-    if(model->grads_memory == nullptr || model->m_memory == nullptr || model->v_memory == nullptr) {
-        fprintf(stderr, "Need to allocate optimizer state before update");
-        exit(EXIT_FAILURE);
-    }
+// void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, float grad_scale, int t,
+//                  MultiGpuConfig* multi_gpu_config, bool init_from_master_only=false) {
+//     // update the model parameters using the AdamW optimizer
+//     // keep in mind that optimizer sharding (ZeRO-1) assigns different parameters to different GPUs
+//     // so we may not be responsible for the entire parameter tensor
+//     // also, this function was very simple a while back but become very complex, only because we want to
+//     // selectively weight decay some, but not all tensors :(
+//     // TODO: revisit and probably refactor this entire function
+//     NVTX_RANGE_FN();
+//     if(model->grads_memory == nullptr || model->m_memory == nullptr || model->v_memory == nullptr) {
+//         fprintf(stderr, "Need to allocate optimizer state before update");
+//         exit(EXIT_FAILURE);
+//     }
 
-    bool init_state = model->init_state;
-    if(init_state) {
-        model->init_state = false;
-        NvtxRange rng("InitOpt");
-        cudaCheck(cudaMemset(model->m_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
-        cudaCheck(cudaMemset(model->v_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
-    }
+//     bool init_state = model->init_state;
+//     if(init_state) {
+//         model->init_state = false;
+//         NvtxRange rng("InitOpt");
+//         cudaCheck(cudaMemset(model->m_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
+//         cudaCheck(cudaMemset(model->v_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
+//     }
 
-    // save RNG state at this point so we can round from master weights identically when restoring from a checkpoint
-    model->rng_state_last_update = model->rng_state;
+//     // save RNG state at this point so we can round from master weights identically when restoring from a checkpoint
+//     model->rng_state_last_update = model->rng_state;
 
-    // AdamW update
-    // handle adamw for all the transformer blocks
-    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
-        // generate a unique seed for each tensor
-        unsigned int seed = random_u32(&model->rng_state);
+//     // AdamW update
+//     // handle adamw for all the transformer blocks
+//     for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+//         // generate a unique seed for each tensor
+//         unsigned int seed = random_u32(&model->rng_state);
 
-        int num_layers = model->config.num_layers;
-        if((i < 2 || i > 13)) {
-            num_layers = 1;
-        }
+//         int num_layers = model->config.num_layers;
+//         if((i < 2 || i > 13)) {
+//             num_layers = 1;
+//         }
 
-        ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
-        ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
-        ptrdiff_t local_offset_full = tensor.offset + shard.offset;
-        ptrdiff_t local_offset_partial = tensor.offset / multi_gpu_config->num_processes;
+//         ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
+//         ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
+//         ptrdiff_t local_offset_full = tensor.offset + shard.offset;
+//         ptrdiff_t local_offset_partial = tensor.offset / multi_gpu_config->num_processes;
 
-        // we only want to weight decay the 2D tensors and leave all 1D tensors alone
-        // in particular this also decays the embedding weights, but this is ok:
-        // - the token embeddings are weight shared and participate in the final projection to logits
-        // - the position embeddings actively participate at every forward/backward pass
-        float wd = (i == 0 || i == 1 || i == 4 || i == 6 || i == 10 || i == 12) ? weight_decay : 0.0f;
-        floatX* param_ptr = (floatX*)model->params_memory + local_offset_full;
-        floatX* grad_ptr = (floatX*)model->grads_memory + local_offset_full;
+//         // we only want to weight decay the 2D tensors and leave all 1D tensors alone
+//         // in particular this also decays the embedding weights, but this is ok:
+//         // - the token embeddings are weight shared and participate in the final projection to logits
+//         // - the position embeddings actively participate at every forward/backward pass
+//         float wd = (i == 0 || i == 1 || i == 4 || i == 6 || i == 10 || i == 12) ? weight_decay : 0.0f;
+//         floatX* param_ptr = (floatX*)model->params_memory + local_offset_full;
+//         floatX* grad_ptr = (floatX*)model->grads_memory + local_offset_full;
 
-        ptrdiff_t opt_state_offset = multi_gpu_config->zero_stage < 1 ?  local_offset_full : local_offset_partial;
-        float* m_ptr = model->m_memory + opt_state_offset;
-        float* v_ptr = model->v_memory + opt_state_offset;
-        float* master_ptr = nullptr;
-        if (model->master_weights != nullptr) { master_ptr = model->master_weights + opt_state_offset; }
-        if(init_state && model->master_weights != nullptr ) {
-            size_t grid_size = CEIL_DIV(shard.size, 512);
-            copy_and_cast_kernel<<<dim3(grid_size, num_layers), 512, 0, main_stream>>>(master_ptr, param_ptr, shard.size,
-                                                                     shard.size, tensor.size);
-            cudaCheck(cudaGetLastError());
-        }
+//         ptrdiff_t opt_state_offset = multi_gpu_config->zero_stage < 1 ?  local_offset_full : local_offset_partial;
+//         float* m_ptr = model->m_memory + opt_state_offset;
+//         float* v_ptr = model->v_memory + opt_state_offset;
+//         float* master_ptr = nullptr;
+//         if (model->master_weights != nullptr) { master_ptr = model->master_weights + opt_state_offset; }
+//         if(init_state && model->master_weights != nullptr ) {
+//             size_t grid_size = CEIL_DIV(shard.size, 512);
+//             copy_and_cast_kernel<<<dim3(grid_size, num_layers), 512, 0, main_stream>>>(master_ptr, param_ptr, shard.size,
+//                                                                      shard.size, tensor.size);
+//             cudaCheck(cudaGetLastError());
+//         }
 
-        if (init_from_master_only) {
-            // when resuming training from a checkpoint with master weights (allows changing precision)
-            init_from_master(param_ptr, master_ptr, shard.size, tensor.size, shard.size, num_layers, seed, main_stream);
-        } else {
-            // ok finally call the kernel to update the weights with AdamW
-            adamw_update(param_ptr, master_ptr, grad_ptr,
-                        m_ptr, v_ptr,
-                        shard.size, tensor.size, tensor.size, shard.size, num_layers,
-                        learning_rate,
-                        beta1, beta2, t, eps, wd, grad_scale, seed, main_stream);
-        }
+//         if (init_from_master_only) {
+//             // when resuming training from a checkpoint with master weights (allows changing precision)
+//             init_from_master(param_ptr, master_ptr, shard.size, tensor.size, shard.size, num_layers, seed, main_stream);
+//         } else {
+//             // ok finally call the kernel to update the weights with AdamW
+//             adamw_update(param_ptr, master_ptr, grad_ptr,
+//                         m_ptr, v_ptr,
+//                         shard.size, tensor.size, tensor.size, shard.size, num_layers,
+//                         learning_rate,
+//                         beta1, beta2, t, eps, wd, grad_scale, seed, main_stream);
+//         }
 
-        if (multi_gpu_config->zero_stage == 1) {
-            // remove multi gpu support completely
-// #if MULTI_GPU
-//             ncclCheck(ncclGroupStart());
-//             for(int l = 0; l < num_layers; ++l) {
-//                 // gather updated shards of model->params_memory from each process
-//                 ncclCheck(ncclAllGather(param_ptr + l * tensor.size,
-//                                         (floatX*) model->params_memory + tensor.offset + l * tensor.size,
-//                                         shard.size, ncclFloatX,
-//                                         multi_gpu_config->nccl_comm, multi_gpu_config->nccl_stream));
-//             }
-//             ncclCheck(ncclGroupEnd());
-// #endif
-        }
-    }
+//         if (multi_gpu_config->zero_stage == 1) {
+//             // remove multi gpu support completely
+// // #if MULTI_GPU
+// //             ncclCheck(ncclGroupStart());
+// //             for(int l = 0; l < num_layers; ++l) {
+// //                 // gather updated shards of model->params_memory from each process
+// //                 ncclCheck(ncclAllGather(param_ptr + l * tensor.size,
+// //                                         (floatX*) model->params_memory + tensor.offset + l * tensor.size,
+// //                                         shard.size, ncclFloatX,
+// //                                         multi_gpu_config->nccl_comm, multi_gpu_config->nccl_stream));
+// //             }
+// //             ncclCheck(ncclGroupEnd());
+// // #endif
+//         }
+//     }
 
-    cudaCheck(cudaDeviceSynchronize());
+//     cudaCheck(cudaDeviceSynchronize());
+// }
+
+void gpt2_update(GPT2 *model, float lr, float beta1, float beta2, float eps, float weight_decay, float grad_scale, int step) {
+    // Unified memory access pattern for Jetson's unified memory architecture
+    adamw_kernel3<<<...>>>(model->params_memory, model->grads_memory, 
+                          model->m_memory, model->v_memory, 
+                          model->num_parameters, lr, beta1, beta2, eps, 
+                          weight_decay, grad_scale, step);
 }
 
 float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
@@ -1495,8 +1514,9 @@ int main(int argc, char *argv[]) {
     }
 
     //multi_gpu_config = multi_gpu_config_init(num_processes, process_rank, gpus_per_node, server_ip, fs_path, nccl_init_method);
-    common_start(override_enable_tf32, false); // common init code for train/test/profile
-
+    // common_start(override_enable_tf32, false); // common init code for train/test/profile
+    // // Optimize for Orin's 8MB L2 cache
+    cudaCheck(cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 6291456));
     // should do a bit more error checking here
     assert(warmup_iterations >= 0);
     if (output_log_dir != NULL) {
@@ -1594,8 +1614,8 @@ int main(int argc, char *argv[]) {
     // build DataLoaders for both train and val
     int permute_train_loader = (overfit_single_batch == 1) ? 0 : 1;
     DataLoader train_loader, val_loader;
-    dataloader_init(&train_loader, train_data_pattern, B, T, multi_gpu_config.process_rank, multi_gpu_config.num_processes, permute_train_loader);
-    dataloader_init(&val_loader, val_data_pattern, B, T, multi_gpu_config.process_rank, multi_gpu_config.num_processes, 0);
+    dataloader_init(&train_loader, train_data_pattern, B, T, 0, 1, permute_train_loader);
+    dataloader_init(&val_loader, val_data_pattern, B, T, 0, 1, 0);
     // figure out the number of training steps we will run for
     int train_num_batches = max_steps; // passed in from command line
     if (train_num_batches == -1) {
@@ -1831,7 +1851,7 @@ int main(int argc, char *argv[]) {
         // fetch the next learning rate
         float step_learning_rate = get_learning_rate(&lr_scheduler, step);
         // calculate the gradient norm and how much we wish to scale the gradient
-        float grad_norm = gpt2_calculate_grad_norm(&model, &multi_gpu_config);
+        float grad_norm = gpt2_calculate_grad_norm(&model);
         float zgrad = (float)(update_detector(&grad_norm_outlier_detector, (double)grad_norm)); // grad z-score
         // update the model parameters
         if (isfinite(zloss) && skip_update_lossz != 0.0f && zloss > skip_update_lossz) {
@@ -1842,7 +1862,7 @@ int main(int argc, char *argv[]) {
             // clip the gradient norm to a maximum value
             float grad_clip = 1.0f;
             float grad_scale = (grad_norm > grad_clip) ? grad_clip / grad_norm : 1.0f;
-            gpt2_update(&model, step_learning_rate, 0.9f, 0.95f, 1e-8f, weight_decay, grad_scale, step+1, &multi_gpu_config);
+            gpt2_update(&model, step_learning_rate, 0.9f, 0.95f, 1e-8f, weight_decay, grad_scale, step+1);;
         }
         cudaCheck(cudaEventRecord(end));
         cudaCheck(cudaEventSynchronize(end)); // wait for the end event to finish to get correct timings

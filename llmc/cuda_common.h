@@ -38,6 +38,8 @@ extern cudaDeviceProp deviceProp;
 #define MAX_1024_THREADS_BLOCKS 1
 #endif
 
+#define SINGLE_GPU
+
 // convenience macro for calculating grid/block dimensions for kernels
 #define CEIL_DIV(M, N) (((M) + (N)-1) / (N))
 

@@ -1,4 +1,4 @@
-CC ?= clang
+CC ?= gcc
 CFLAGS = -Ofast -Wno-unused-result -Wno-ignored-pragmas -Wno-unknown-attributes
 LDFLAGS =
 LDLIBS = -lm

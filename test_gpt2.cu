@@ -143,6 +143,7 @@ int main(int argc, char *argv[]) {
     printf("batch_size: %d\n", B);
     printf("seq_len: %d\n", T);
 
+    // Remove set zero configs completely
     set_zero_configs(&multi_gpu_config, 0, model.num_parameters);
 
     // read reference information from the file saved from Python/PyTorch side
