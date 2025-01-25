@@ -68,7 +68,8 @@ GPT-2 Transformer Neural Net training loop. See README.md for usage.
 // defines: multi_gpu_config_init, multi_gpu_config_free
 // defines: set_zero_configs, multi_gpu_cpu_float_sum, multi_gpu_barrier
 // defines: multi_gpu_get_shard_offset, multi_gpu_async_reduce_gradient
-#include "llmc/zero.cuh"
+// #include "llmc/zero.cuh"
+#include "llmc/single_gpu.cuh"
 
 // ----------------------------------------------------------------------------
 // global vars for I/O
@@ -409,13 +410,7 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
     }
 
     // report on mixed memory allocation status (re-using our float reduce function, bit awk ok)
-    // int reduced_memory_status = (int) multi_gpu_cpu_float_sum((float)memory_status, &multi_gpu_config);
     int reduced_memory_status = (int)memory_status;
-    // no multi-gpu fallback warning needed
-    // if (reduced_memory_status >= 1) {
-    //     printf0("WARNING: Fell back to cudaMallocManaged when initializing m,v,master_weights on %d GPUs\n", reduced_memory_status);
-    //     printf0("         Prevents an OOM, but code may run much slower due to device <-> host memory movement\n");
-    // }
     // report on device memory usage
     size_t free, total;
     cudaCheck(cudaMemGetInfo(&free, &total));
@@ -957,9 +952,6 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         global_sum_deterministic(model->accumulated_mean_loss, acts.losses, B*T, main_stream);
         // reduce loss across GPUs to a single, final float across all microsteps and GPUs
         // remove multi gpu support completely
-        // #if MULTI_GPU
-        // ncclCheck(ncclAllReduce(model->accumulated_mean_loss, model->accumulated_mean_loss, sizeof(float), ncclFloat, ncclAvg, multi_gpu_config.nccl_comm, main_stream));
-        // #endif
         cudaCheck(cudaMemcpyAsync(&model->mean_loss, model->accumulated_mean_loss, sizeof(float), cudaMemcpyDeviceToHost, main_stream));
         // reduce the gradients for non-transformer block parameters
         floatX* const pointers[] = {grads.wte, grads.wpe, grads.lnfw, grads.lnfb};
@@ -1021,10 +1013,6 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
         }
         global_sum_deterministic(grad_norm_squared, grad_norm_squared, max_num_block_sums, main_stream);
         // remove if multi gpu block completely
-// #if MULTI_GPU
-//         // further sum the (partial) squared norm across all GPUs
-//         ncclCheck(ncclAllReduce(grad_norm_squared, grad_norm_squared, sizeof(float), ncclFloat, ncclSum, multi_gpu_config->nccl_comm, main_stream));
-// #endif
     } else {
         // in regular DDP, backward has averaged the gradients across all GPUs
         // so each GPU can compute the squared norm over the whole grad vector, with no added comms needed

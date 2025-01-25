@@ -11,3 +11,6 @@ Possible Research Implementations / Integrations:
 - DeepSeek R1-style kv cache reduction
 - Mixture of Depths
 - ThunderKittens to take advantage of warp tiling
+- MultiToken Prediction
+- Reinforcement Learning (Deepseek style)
+- Maybe even deepseek overall

@@ -96,21 +96,6 @@ else
   endif
 endif
 
-# Check if OpenMPI and NCCL are available, include them if so, for multi-GPU training
-# ifeq ($(NO_MULTI_GPU), 1)
-#   $(info → Multi-GPU (OpenMPI + NCCL) is manually disabled)
-# else
-#   ifeq ($(shell [ -d /usr/lib/x86_64-linux-gnu/openmpi/lib/ ] && [ -d /usr/lib/x86_64-linux-gnu/openmpi/include/ ] && echo "exists"), exists)
-#     $(info ✓ OpenMPI found, OK to train with multiple GPUs)
-#     NVCC_INCLUDES += -I/usr/lib/x86_64-linux-gnu/openmpi/include
-#     NVCC_LDFLAGS += -L/usr/lib/x86_64-linux-gnu/openmpi/lib/
-#     NVCC_LDLIBS += -lmpi -lnccl
-#     NVCC_FLAGS += -DMULTI_GPU
-#   else
-#     $(info ✗ OpenMPI is not found, disabling multi-GPU support)
-#     $(info ---> On Linux you can try install OpenMPI with `sudo apt install openmpi-bin openmpi-doc libopenmpi-dev`)
-#   endif
-# endif
 
 # Precision settings, default to bf16 but ability to override
 ifeq ($(MAKECMDGOALS), clean)
